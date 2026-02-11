@@ -1,0 +1,159 @@
+volumes:
+  kafka_data:
+    driver: local
+
+networks:
+  kafka-network:
+    driver: bridge
+
+services:
+    # PostgreSQL Database
+    postgres:
+      image: postgres:15
+      container_name: postgres
+      restart: unless-stopped
+      environment:
+        POSTGRES_DB: postgres
+        POSTGRES_USER: postgres
+        POSTGRES_PASSWORD: postgres
+      ports:
+        - "5433:5432"
+      volumes:
+        - ./postgres-data:/var/lib/postgresql/data
+      networks:
+        - kafka-network
+      command: >
+        postgres -c wal_level=logical 
+                -c max_wal_senders=5 
+                -c max_replication_slots=5
+
+    # Init container to fix Kafka volume permissions
+    kafka-init:
+      image: confluentinc/cp-kafka:7.4.0
+      # platform: linux/amd64
+      container_name: kafka-init
+      user: "0:0"
+      volumes:
+        - kafka_data:/tmp/kraft-combined-logs
+      command: >
+        bash -c "
+          echo 'Fixing Kafka volume permissions...'
+          chown -R 1000:1000 /tmp/kraft-combined-logs
+          chmod -R 755 /tmp/kraft-combined-logs
+          echo 'Permissions fixed successfully'
+        "
+      networks:
+        - kafka-network
+
+    # Kafka Broker (KRaft mode)
+    kafka:
+      image: confluentinc/cp-kafka:7.4.0
+      # platform: linux/amd64
+      container_name: kafka
+      restart: unless-stopped
+      user: "1000:1000"
+      depends_on:
+        - kafka-init
+      ports:
+        - "9092:9092"
+        - "9101:9101"
+      volumes:
+        - kafka_data:/var/lib/kafka/data
+      networks:
+        - kafka-network
+      environment:
+        KAFKA_NODE_ID: 1
+        KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
+        KAFKA_ADVERTISED_LISTENERS: 'PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092'
+        KAFKA_LISTENERS: 'PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092'
+        KAFKA_INTER_BROKER_LISTENER_NAME: 'PLAINTEXT'
+        KAFKA_CONTROLLER_LISTENER_NAMES: 'CONTROLLER'
+        KAFKA_CONTROLLER_QUORUM_VOTERS: '1@kafka:29093'
+        KAFKA_PROCESS_ROLES: 'broker,controller'
+        KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+        KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+        KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+        KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+        KAFKA_LOG_DIRS: '/var/lib/kafka/data'
+        KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+        CLUSTER_ID: '4L6g3nShT-eMCtK--X86sw'
+        KAFKA_JMX_PORT: 9101
+        KAFKA_JMX_HOSTNAME: localhost
+      healthcheck:
+        test: ["CMD", "kafka-topics", "--bootstrap-server", "kafka:29092", "--list"]
+        interval: 30s
+        timeout: 10s
+        retries: 5
+
+    # Confluent Kafka Connect without Schema Registry
+    connect:
+      image: confluentinc/cp-kafka-connect:7.4.0
+      # platform: linux/amd64
+      container_name: connect
+      restart: unless-stopped
+      depends_on:
+        - kafka
+      ports:
+        - "8083:8083"
+      environment:
+        CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+        CONNECT_GROUP_ID: connect-group
+        CONNECT_CONFIG_STORAGE_TOPIC: connect_configs
+        CONNECT_OFFSET_STORAGE_TOPIC: connect_offsets
+        CONNECT_STATUS_STORAGE_TOPIC: connect_statuses
+        # Set replication factor to 1 for single broker setup
+        CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+        CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+        CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+        CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+        CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+        CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "true"
+        CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
+        CONNECT_REST_ADVERTISED_HOST_NAME: connect
+        CONNECT_LOG4J_APPENDER_STDOUT_LAYOUT_CONVERSIONPATTERN: '[%d] %p %X{connector.context}%m (%c:%L)%n'
+        CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+        # Enable JMX monitoring
+        KAFKA_JMX_PORT: 1976
+        KAFKA_JMX_HOSTNAME: 0.0.0.0
+      networks:
+        - kafka-network
+      volumes:
+        - ./connectors:/etc/kafka-connect/jars
+      command:
+        - bash
+        - -c
+        - |
+          # Install Debezium and JDBC connectors
+          echo "Installing Debezium PostgreSQL connector..."
+          confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.5.4
+          
+          echo "Installing Confluent JDBC connector..."
+          confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.7.4
+          
+          echo "Starting Kafka Connect..."
+          /etc/confluent/docker/run
+      healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+        interval: 30s
+        timeout: 10s
+        retries: 10
+
+    # Provectus Kafka UI  
+    connect-ui:
+      image: provectuslabs/kafka-ui:latest
+      # platform: linux/amd64
+      container_name: connect-ui
+      restart: unless-stopped
+      depends_on:
+        - kafka
+        - connect
+      ports:
+        - "8090:8080"
+      environment:
+        DYNAMIC_CONFIG_ENABLED: "true"
+        KAFKA_CLUSTERS_0_NAME: local
+        KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+        KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
+        KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+      networks:
+        - kafka-network
