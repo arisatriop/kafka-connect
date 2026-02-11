@@ -1,7 +1,3 @@
-volumes:
-  kafka_data:
-    driver: local
-
 networks:
   kafka-network:
     driver: bridge
@@ -34,12 +30,12 @@ services:
       container_name: kafka-init
       user: "0:0"
       volumes:
-        - kafka_data:/tmp/kraft-combined-logs
+        - ./kafka-data:/var/lib/kafka/data
       command: >
         bash -c "
           echo 'Fixing Kafka volume permissions...'
-          chown -R 1000:1000 /tmp/kraft-combined-logs
-          chmod -R 755 /tmp/kraft-combined-logs
+          chown -R 1000:1000 /var/lib/kafka/data
+          chmod -R 755 /var/lib/kafka/data
           echo 'Permissions fixed successfully'
         "
       networks:
@@ -58,7 +54,7 @@ services:
         - "9092:9092"
         - "9101:9101"
       volumes:
-        - kafka_data:/var/lib/kafka/data
+        - ./kafka-data:/var/lib/kafka/data
       networks:
         - kafka-network
       environment:
