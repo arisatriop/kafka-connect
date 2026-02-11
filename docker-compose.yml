@@ -134,22 +134,21 @@ services:
         timeout: 10s
         retries: 10
 
-    # Provectus Kafka UI  
-    connect-ui:
-      image: provectuslabs/kafka-ui:latest
-      # platform: linux/amd64
-      container_name: connect-ui
-      restart: unless-stopped
+    kafbat-ui:
+      container_name: kafbat-ui
+      image: ghcr.io/kafbat/kafka-ui:v1.4.2
+      ports:
+        - 8080:8080
+      environment:
+        DYNAMIC_CONFIG_ENABLED: 'true'
+        # === BASIC AUTH ===
+        AUTH_TYPE: LOGIN_FORM
+        SPRING_SECURITY_USER_NAME: admin
+        SPRING_SECURITY_USER_PASSWORD: admin123
       depends_on:
         - kafka
         - connect
-      ports:
-        - "8090:8080"
-      environment:
-        DYNAMIC_CONFIG_ENABLED: "true"
-        KAFKA_CLUSTERS_0_NAME: local
-        KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-        KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: connect
-        KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+      volumes:
+        - ./kui/config.yml:/etc/kafkaui/dynamic_config.yaml
       networks:
         - kafka-network
