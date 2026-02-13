@@ -2,13 +2,13 @@
 
 # Config
 {
-    "name": "confluent-postgres-sink",
+    "name": "db_name.table_name.sink",
     "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
     "tasks.max": "1",
 
-    "topics": "confluent-cdc.public.rates",
+    "topics": "topic_name",
 
-    "connection.url": "jdbc:postgresql://postgres:5432/postgres",
+    "connection.url": "jdbc:postgresql://postgres:5432/db_name",
     "connection.user": "postgres",
     "connection.password": "postgres",
 

@@ -2,7 +2,7 @@
 
 # Config
 {
-  "name": "confluent-postgres-source",
+  "name": "db_name.table_name.unique_suffix.source",
   "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
   "tasks.max": "1",
   
@@ -12,12 +12,12 @@
   "database.password": "postgres",
   "database.dbname": "postgres",
   
-  "topic.prefix": "confluent-cdc",
-  "schema.include.list": "public",
-  "table.include.list": "public.rates",
+  "topic.prefix": "db_name",
+  "schema.include.list": "schema_name",
+  "table.include.list": "schema_name.table_name",
   
   "plugin.name": "pgoutput",
-  "slot.name": "confluent_rates_slot",
+  "slot.name": "slot_table_name.unique_suffix",
   "publication.autocreate.mode": "filtered",
   "snapshot.mode": "initial",
   
