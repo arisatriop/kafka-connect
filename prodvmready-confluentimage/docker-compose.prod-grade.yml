@@ -1,0 +1,134 @@
+version: "3.9"
+
+networks:
+  kafka-network:
+    driver: bridge
+
+services:
+
+  # ---------------- POSTGRES ----------------
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: strongpassword
+    ports:
+      - 5433:5432
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    networks:
+      - kafka-network
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c shared_buffers=512MB
+
+  # ---------------- KAFKA INIT ----------------
+  kafka-init:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka-init
+    user: "0:0"
+    volumes:
+      - ./kafka-data:/var/lib/kafka/data
+    command: >
+      bash -c "
+        chown -R 1000:1000 /var/lib/kafka/data &&
+        chmod -R 755 /var/lib/kafka/data
+      "
+    networks:
+      - kafka-network
+
+  # ---------------- KAFKA ----------------
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      - kafka-init
+    volumes:
+      - ./kafka-data:/var/lib/kafka/data
+    networks:
+      - kafka-network
+    environment:
+      CLUSTER_ID: '4L6g3nShT-eMCtK--X86sw'
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      KAFKA_HEAP_OPTS: "-Xms2G -Xmx2G"
+
+  # ---------------- CONNECT ----------------
+  connect:
+    image: confluentinc/cp-kafka-connect:7.4.0
+    container_name: connect
+    restart: unless-stopped
+    depends_on:
+      - kafka
+    networks:
+      - kafka-network
+    volumes:
+      - ./connectors:/etc/kafka-connect/jars
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+      CONNECT_GROUP_ID: connect-group
+
+      CONNECT_CONFIG_STORAGE_TOPIC: connect_configs
+      CONNECT_OFFSET_STORAGE_TOPIC: connect_offsets
+      CONNECT_STATUS_STORAGE_TOPIC: connect_statuses
+
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+
+      KAFKA_HEAP_OPTS: "-Xms1G -Xmx1G"
+
+    command:
+      - bash
+      - -c
+      - |
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:2.5.4
+        confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.7.4
+        /etc/confluent/docker/run
+
+  # ---------------- KAFBAT UI ----------------
+  kafbat-ui:
+    image: kafbat/kafka-ui:v1.4.2
+    container_name: kafbat-ui
+    restart: unless-stopped
+    depends_on:
+      - kafka
+      - connect
+    networks:
+      - kafka-network
+    volumes:
+      - ./kui/config.yml:/etc/kafkaui/dynamic_config.yaml
+    ports:
+      - 8080:8080
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      AUTH_TYPE: LOGIN_FORM
+      SPRING_SECURITY_USER_NAME: admin
+      SPRING_SECURITY_USER_PASSWORD: strongpassword
