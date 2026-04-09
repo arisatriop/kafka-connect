@@ -1,196 +1,221 @@
-# Kafka Connect Setup dengan Confluent Images
+# Kafka Connect — Confluent Image Setup
+
+CDC pipeline using Confluent Platform components. Captures change events from PostgreSQL via Debezium and syncs them to a target database via JDBC Sink.
+
+---
+
+## Architecture
+
+```
+PostgreSQL (Source)
+      │
+      ▼
+Debezium Source Connector  ──►  Kafka (KRaft)  ──►  JDBC Sink Connector
+                                                           │
+                                                           ▼
+                                                  PostgreSQL (Target)
+```
+
+---
 
 ## Services
-- **PostgreSQL 15** - Source database dengan logical replication
-- **Kafka (KRaft)** - Confluent Kafka tanpa Zookeeper  
-- **Confluent Kafka Connect** - Kafka Connect dengan Confluent image + Debezium + JDBC connectors
-- **Provectus Kafka UI** (connect-ui-1) - Modern Kafka management interface
-- **Landoop Connect UI** (connect-ui-2) - Specialized connector management UI
+
+| Service | Image | Description |
+|---------|-------|-------------|
+| `postgres` | `postgres:15` | PostgreSQL with logical replication enabled |
+| `kafka` | `confluentinc/cp-kafka:7.4.0` | Kafka broker in KRaft mode (no Zookeeper) |
+| `kafka-init` | `confluentinc/cp-kafka:7.4.0` | Init container to fix Kafka volume permissions |
+| `connect` | `confluentinc/cp-kafka-connect:7.4.0` | Kafka Connect with Debezium + JDBC connectors |
+| `kafbat-ui` | `kafbat/kafka-ui:v1.4.2` | Kafka management UI |
+
+### Installed Connectors (auto-installed on startup)
+
+| Connector | Version |
+|-----------|---------|
+| `debezium/debezium-connector-postgresql` | `2.5.4` |
+| `confluentinc/kafka-connect-jdbc` | `10.7.4` |
+
+---
+
+## Compose Files
+
+| File | Purpose |
+|------|---------|
+| `docker-compose.yml` | Local development — ports bound to `127.0.0.1` |
+| `docker-compose.prod-grade.yml` | Production — stricter resource settings, no localhost binding |
+
+---
 
 ## Ports
-- PostgreSQL: `5433:5432`
-- Kafka: `9092:9092`
-- Kafka Connect: `8083:8083`
-- Provectus UI (connect-ui-1): `8090:8080`
-- Landoop UI (connect-ui-2): `8000:8000`
 
-## Key Features
-- **Confluent Platform components** untuk production-grade CDC
-- **JSON serialization** dengan schema enabled untuk compatibility
-- **Reliable field filtering** dengan Confluent JDBC Sink
-- **Production-ready** dengan health checks dan proper networking
-- **Complete CRUD support** - INSERT, UPDATE, soft DELETE, hard DELETE
+### Development (`docker-compose.yml`)
 
-## Advantages over Debezium-only Setup
-- ✅ **Better field filtering** - Confluent JDBC Sink handles column selection properly
-- ✅ **Production support** - Enterprise-grade connectors
-- ✅ **JSON serialization** - Human-readable format
-- ✅ **Reliable CDC operations** - More stable DELETE/UPDATE dengan field selection
-- ✅ **Simpler setup** - No Schema Registry required
+| Service | Host | Container |
+|---------|------|-----------|
+| PostgreSQL | `127.0.0.1:5432` | `5432` |
+| Kafka Connect REST API | — | `8083` (internal only) |
+| Kafbat UI | `127.0.0.1:8080` | `8080` |
 
-## Usage
+### Production (`docker-compose.prod-grade.yml`)
+
+| Service | Host | Container |
+|---------|------|-----------|
+| PostgreSQL | `5433` | `5432` |
+| Kafka Connect REST API | — | `8083` (internal only) |
+| Kafbat UI | `8080` | `8080` |
+
+> Kafka Connect REST API is only accessible within the Docker network. Use `docker exec` or route through the UI.
+
+---
+
+## Quick Start
 
 ### 1. Start Services
+
 ```bash
+# Development
 docker-compose up -d
+
+# Production
+docker-compose -f docker-compose.prod-grade.yml up -d
 ```
 
-### 2. Wait for All Services
+> On first start, Kafka Connect will install the connectors before starting. This takes ~1–2 minutes.
+
+### 2. Verify Connect is Ready
+
 ```bash
-# Check Connect status
-./manage-confluent.sh check
+# Wait until this returns HTTP 200
+curl http://localhost:8083/
 
-# Check available connector plugins
-./manage-confluent.sh plugins
+# Or check via docker logs
+docker logs connect -f
 ```
 
-### 3. Create Test Setup
+### 3. Deploy Connectors
+
+Configure and register the connectors via the Kafka Connect REST API:
+
 ```bash
-# Create test tables and data
-./manage-confluent.sh create-setup
-./manage-confluent.sh insert-data
+# Register source connector
+curl -X POST http://localhost:8083/connectors \
+  -H "Content-Type: application/json" \
+  -d @connectors/source-postgres-connector.json.sh
+
+# Register sink connector
+curl -X POST http://localhost:8083/connectors \
+  -H "Content-Type: application/json" \
+  -d @connectors/sink-jdbc-connector.json.sh
 ```
 
-### 4. Deploy Connectors
+### 4. Monitor
+
+- **Kafbat UI**: http://localhost:8080 (login: `admin` / `admin123`)
+
+---
+
+## Connector Configuration
+
+See the dedicated documentation files:
+
+- [`connectors/source-connector.md`](connectors/source-connector.md) — Debezium PostgreSQL Source
+- [`connectors/sink-connector.md`](connectors/sink-connector.md) — Confluent JDBC Sink
+
+Config templates:
+
+- [`connectors/source-postgres-connector.json.sh`](connectors/source-postgres-connector.json.sh)
+- [`connectors/sink-jdbc-connector.json.sh`](connectors/sink-jdbc-connector.json.sh)
+
+---
+
+## Managing Connectors
+
+All connector management is done through the **Kafka Connect REST API** (port `8083`).
+
+### Check Status
+
 ```bash
-# Deploy source connector
-./manage-confluent.sh deploy-source
+# List all connectors
+curl http://localhost:8083/connectors
 
-# Deploy sink connector
-./manage-confluent.sh deploy-sink
+# Get connector status
+curl http://localhost:8083/connectors/{connector-name}/status
+
+# Get connector config
+curl http://localhost:8083/connectors/{connector-name}/config
 ```
 
-### 5. Test CDC Operations
+### Restart / Delete
+
 ```bash
-# Test all CRUD operations
-./manage-confluent.sh test-ops
+# Restart a connector
+curl -X POST http://localhost:8083/connectors/{connector-name}/restart
 
-# Check connector status
-./manage-confluent.sh status confluent-postgres-source
-./manage-confluent.sh status confluent-postgres-sink
+# Delete a connector
+curl -X DELETE http://localhost:8083/connectors/{connector-name}
+
+# List available plugins
+curl http://localhost:8083/connector-plugins
 ```
 
-### 6. Monitor
-- **Provectus Kafka UI** (connect-ui-1): http://localhost:8090
-- **Landoop Connect UI** (connect-ui-2): http://localhost:8000
+---
 
-## Configuration Details
+## CRUD Support
 
-### Source Connector
-- **Debezium PostgreSQL** connector dengan JSON serialization
-- **Tombstones enabled** untuk hard delete support
-- **Built-in schema management** tanpa external registry
+This setup supports full CDC operations:
 
-### Sink Connector  
-- **Confluent JDBC** connector (lebih reliable dari Debezium JDBC)
-- **Field filtering** dengan `ReplaceField` transform
-- **UPSERT mode** untuk INSERT/UPDATE operations
-- **DELETE enabled** untuk hard delete operations
-- **Auto schema evolution** untuk column changes
+| Operation | Type | How |
+|-----------|------|-----|
+| `INSERT` | Hard | Captured as `c` event by Debezium |
+| `UPDATE` | Hard | Captured as `u` event by Debezium |
+| Soft DELETE | Soft | `UPDATE` setting `deleted_at` / `deleted_by` |
+| Hard DELETE | Hard | Captured as `d` event + tombstone → deleted from sink |
 
-### Table Structure Support
-**Source Table** (15 columns):
-```sql
-id, sub_package_id, source_id, vehicle_submodel_id, manufacture_id, 
-vehicle_age_from, vehicle_age_to, term, flat_rate_per_term, 
-created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
-```
+> Hard DELETE requires `tombstones.on.delete: true` on the source connector and `delete.enabled: true` on the sink connector.
 
-**Target Table** (10 columns):
-```sql
-id, vehicle_age_from, vehicle_age_to, term, flat_rate_per_term,
-created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
-```
-
-**Field Filtering** automatically excludes:
-- `sub_package_id` 
-- `source_id`
-- `vehicle_submodel_id`
-- `manufacture_id`
-
-## CRUD Operations
-
-### ✅ INSERT
-```sql  
-INSERT INTO rates (sub_package_id, source_id, vehicle_submodel_id, manufacture_id, 
-                  vehicle_age_from, vehicle_age_to, term, flat_rate_per_term, created_by)
-VALUES (1, 2, 3, 4, 1, 5, 12, 100.00, 'user');
-```
-
-### ✅ UPDATE
-```sql
-UPDATE rates SET flat_rate_per_term = 150.00, updated_by = 'admin' WHERE id = 1;
-```
-
-### ✅ SOFT DELETE
-```sql
-UPDATE rates SET deleted_at = NOW(), deleted_by = 'admin' WHERE id = 1;
-```
-
-### ✅ HARD DELETE  
-```sql
-DELETE FROM rates WHERE id = 1;
-```
+---
 
 ## Troubleshooting
 
-### Check Connector Status
+### Kafka Connect not starting
+
 ```bash
-./manage-confluent.sh status [connector-name]
-./manage-confluent.sh config [connector-name]
+docker logs connect -f
 ```
 
-### Check Topics and Messages
-Via Provectus UI (http://localhost:8090) atau:
+Common causes: Kafka not ready yet, or connector install failed. Wait and retry.
+
+### Connector stuck in FAILED state
+
+```bash
+# Check error details
+curl http://localhost:8083/connectors/{connector-name}/status
+
+# Restart the connector
+curl -X POST http://localhost:8083/connectors/{connector-name}/restart
+```
+
+### Inspect Kafka Topics
+
+Via Kafbat UI at http://localhost:8080, or via CLI:
+
 ```bash
 # List topics
 docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
 
-# Consume messages
-docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic confluent-cdc.public.rates --from-beginning
+# Consume messages from a topic
+docker exec kafka kafka-console-consumer \
+  --bootstrap-server localhost:9092 \
+  --topic {topic_name} \
+  --from-beginning
 ```
 
-### Check Schema Registry
+### PostgreSQL Replication Slot
+
 ```bash
-# Schema Registry not available in this setup
-# All schemas managed internally by Kafka Connect
+# Check active replication slots
+docker exec postgres psql -U postgres -c "SELECT * FROM pg_replication_slots;"
+
+# Drop a stale slot (if connector was deleted without cleanup)
+docker exec postgres psql -U postgres -c "SELECT pg_drop_replication_slot('{slot_name}');"
 ```
-
-### Common Issues
-
-#### JSON Serialization Issues
-Jika ada masalah dengan JSON, check connector configuration:
-```bash
-./manage-confluent.sh config [connector-name]
-```
-
-#### Permission Issues
-```bash
-# Restart PostgreSQL if needed
-docker-compose restart postgres
-```
-
-#### Schema Evolution
-Confluent setup automatically handles schema changes dengan:
-```yaml
-"auto.evolve": "true"
-```
-No external Schema Registry required.
-
-## Management Commands
-```bash
-./manage-confluent.sh help                    # Show all commands
-./manage-confluent.sh check                   # Check Connect health
-./manage-confluent.sh list                    # List all connectors
-./manage-confluent.sh plugins                 # List available plugins
-./manage-confluent.sh create-setup            # Create test environment
-./manage-confluent.sh insert-data             # Add test data
-./manage-confluent.sh test-ops               # Test CRUD operations
-./manage-confluent.sh deploy-source          # Deploy source connector
-./manage-confluent.sh deploy-sink            # Deploy sink connector
-./manage-confluent.sh status [name]          # Get connector status
-./manage-confluent.sh delete [name]          # Delete connector
-./manage-confluent.sh restart [name]         # Restart connector
-```
-
-Selamat mencoba setup Confluent yang lebih reliable! 🚀
